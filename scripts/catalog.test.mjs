@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { makeRefs } from '../src/catalog.ts'
-import { initialState, recordAnswer } from '../src/practice.ts'
+import { initialState, movePractice, recordAnswer, resumePractice } from '../src/practice.ts'
 import { excludedFullIds, parseQuestions, parseSelectedQuestions } from './prepare-data.mjs'
 
 const full = [{ id: 10, question: '原题', chapter: '原题', sourceUrl: '', options: [{ key: 'A' }, { key: 'B' }], answer: 'B', explanation: '原解析', images: [] }]
@@ -37,4 +37,26 @@ test('all 300 selected questions retain their original website explanations', ()
     assert.equal(ref.question.explanation, sourceById.get(ref.id).explanation)
     assert.equal(ref.question.sourceUrl, sourceById.get(ref.id).sourceUrl)
   }
+})
+
+
+test('completing 300 selected originals leaves exactly 1541 unanswered full-bank questions', () => {
+  const catalog = JSON.parse(readFileSync(new URL('../public/data/catalog.json', import.meta.url), 'utf8'))
+  let state = initialState(catalog.questions, catalog.selected)
+  state.page = 'compact'
+  const byId = new Map(catalog.questions.map((question) => [question.id, question]))
+  for (const id of state.compact.order) state = recordAnswer(state, id, byId.get(id).answer, byId.get(id).answer)
+  state = movePractice(state, 1)
+  assert.equal(state.compact.index, 300)
+  state = resumePractice(state, 'full')
+  const remaining = []
+  while (state.full.index < state.full.order.length) {
+    const id = state.full.order[state.full.index]
+    assert.ok(!state.answers[id], `already answered original ${id} was shown again`)
+    remaining.push(id)
+    state = movePractice(recordAnswer(state, id, byId.get(id).answer, byId.get(id).answer), 1)
+  }
+  assert.equal(remaining.length, 1541)
+  assert.equal(new Set(remaining).size, 1541)
+  assert.equal(Object.keys(state.answers).length, 1841)
 })

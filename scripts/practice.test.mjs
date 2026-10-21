@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   COMPACT_ORDER_STORAGE_KEY, FULL_ORDER_KEY, LEGACY_STORAGE_KEY, OLD_STORAGE_KEY, STORAGE_KEY,
-  clearLegacyState, initialState, loadMigratedState, parseState, recordAnswer, restartState, saveState,
+  clearLegacyState, findUnansweredIndex, initialState, loadMigratedState, movePractice, parseState,
+  recordAnswer, restartState, resumePractice, saveState,
 } from '../src/practice.ts'
 
 const questions = [
@@ -36,7 +37,11 @@ test('one archive holds answers, favorites, orders and cursors', () => {
   assert.equal(saveState(answered, false), false)
   assert.equal(localStorage.getItem(STORAGE_KEY), null)
   assert.equal(saveState(answered, true), true)
-  assert.deepEqual(loadMigratedState(questions, selected), { state: answered, needsSave: false })
+  const resumed = loadMigratedState(questions, selected)
+  assert.deepEqual(resumed.state.answers, answered.answers)
+  assert.deepEqual(resumed.state.favorites, answered.favorites)
+  assert.equal(resumed.state.compact.index, 1)
+  assert.equal(resumed.needsSave, true)
 
   const restarted = restartState(answered, 'compact', new Set([1]))
   assert.deepEqual(restarted.answers, {})
@@ -91,4 +96,54 @@ test('migration keeps the full order cursor after removed questions', () => {
   const { state } = loadMigratedState(questions, selected)
   assert.deepEqual(state.full.order, [2, 1])
   assert.equal(state.full.index, 1)
+})
+
+
+test('switching banks skips shared answers, including wrong answers, without losing skipped questions', () => {
+  const state = initialState(questions, selected)
+  state.full = { order: [1, 2], index: 1 }
+  state.compact = { order: [1], index: 0 }
+  state.page = 'compact'
+  const answered = recordAnswer(state, 1, 'A', 'B')
+  assert.equal(answered.compact.index, 0, 'keep the current answer visible for its explanation')
+  const full = resumePractice(answered, 'full')
+  assert.equal(full.full.order[full.full.index], 2)
+  assert.deepEqual(full.answers, { 1: 'A' })
+  assert.deepEqual(full.favorites, [1])
+  const completed = resumePractice(full, 'compact')
+  assert.equal(completed.compact.index, 1)
+  assert.equal(completed.answers, full.answers)
+  assert.equal(findUnansweredIndex([1, 2, 3], { 2: 'A', 3: 'B' }, 2), 0)
+})
+
+test('navigation skips answered runs in both directions and wraps forward to missed questions', () => {
+  const state = initialState(questions, selected)
+  state.full = { order: [1, 2, 3, 4, 5], index: 0 }
+  state.answers = { 2: 'A', 3: 'B', 5: 'A' }
+  const next = movePractice(state, 1)
+  assert.equal(next.full.order[next.full.index], 4)
+  assert.equal(movePractice(next, -1).full.index, 0)
+  const answered = recordAnswer(next, 4, 'A', 'A')
+  assert.equal(movePractice(answered, 1).full.index, 0)
+  assert.equal(movePractice(state, -1), state)
+})
+
+test('finishing the last question survives refresh and favorites still show answered questions', () => {
+  storage()
+  const state = initialState(questions, selected)
+  state.full = { order: [1, 2], index: 1 }
+  state.answers = { 1: 'B', 2: 'B' }
+  state.favorites = [2]
+  const completed = movePractice(state, 1)
+  assert.equal(completed.full.index, 2)
+  assert.equal(saveState(completed, true), true)
+  assert.deepEqual(loadMigratedState(questions, selected), { state: completed, needsSave: false })
+  const favorites = resumePractice(completed, 'favorites')
+  assert.equal(favorites.favoriteIndex, 0)
+  assert.deepEqual(favorites.favorites, [2])
+  assert.equal(favorites.answers[2], 'B')
+  const restarted = restartState(completed, 'full', new Set([1]))
+  assert.deepEqual(restarted.answers, {})
+  assert.equal(restarted.full.index, 0)
+  assert.deepEqual(restarted.favorites, [2])
 })

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import catalogVersion from './generated/catalog-version.json'
 import { makeRefs, type QuestionRef } from './catalog'
 import {
-  STORAGE_KEY, clearLegacyState, loadMigratedState, recordAnswer, restartState, saveState,
+  STORAGE_KEY, clearLegacyState, findUnansweredIndex, loadMigratedState, movePractice,
+  recordAnswer, restartState, resumePractice, saveState,
   type OptionKey, type Page, type PracticeData, type Question, type SelectedQuestion,
 } from './practice'
 
@@ -83,10 +84,10 @@ function ResetDialog({ compact, onClose, onConfirm }: { compact: boolean; onClos
 
 type QuestionCardProps = {
   refItem: QuestionRef; index: number; total: number; selected?: OptionKey
-  favorite: boolean; writable: boolean; pendingAdvance: boolean
-  onFavorite: () => void; onAnswer: (answer: OptionKey) => void; onMove: (index: number) => void
+  favorite: boolean; writable: boolean; pendingAdvance: boolean; canMoveBack: boolean; canMoveNext: boolean
+  onFavorite: () => void; onAnswer: (answer: OptionKey) => void; onMove: (direction: 1 | -1) => void
 }
-function QuestionCard({ refItem, index, total, selected, favorite, writable, pendingAdvance, onFavorite, onAnswer, onMove }: QuestionCardProps) {
+function QuestionCard({ refItem, index, total, selected, favorite, writable, pendingAdvance, canMoveBack, canMoveNext, onFavorite, onAnswer, onMove }: QuestionCardProps) {
   const question = refItem.question
   return <section className="question-card" aria-labelledby="question-title">
     <div className="question-top">
@@ -120,7 +121,7 @@ function QuestionCard({ refItem, index, total, selected, favorite, writable, pen
           <strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong>
           <p>解析：{question.explanation || '原网站暂未提供解析。'}</p>
           <a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>
-          {selected === question.answer && pendingAdvance && <span className="auto-result-note">即将进入下一题</span>}
+          {selected === question.answer && pendingAdvance && <span className="auto-result-note">即将继续练习</span>}
           {selected !== question.answer && favorite && <span className="auto-result-note">已在我的收藏中</span>}
         </div>
       </div>}
@@ -128,8 +129,8 @@ function QuestionCard({ refItem, index, total, selected, favorite, writable, pen
     <div className="question-footer">
       <span className="keyboard-tip">按照自己的节奏，一题一题来</span>
       <div className="question-actions">
-        <button className="button-secondary" disabled={!writable || index === 0} onClick={() => onMove(index - 1)}><Icon name="arrowLeft" size={17} /> 上一题</button>
-        <button className="button-primary" disabled={!writable || index === total - 1} onClick={() => onMove(index + 1)}>下一题 <Icon name="arrowRight" size={17} /></button>
+        <button className="button-secondary" disabled={!writable || !canMoveBack} onClick={() => onMove(-1)}><Icon name="arrowLeft" size={17} /> 上一题</button>
+        <button className="button-primary" disabled={!writable || !canMoveNext} onClick={() => onMove(1)}>下一题 <Icon name="arrowRight" size={17} /></button>
       </div>
     </div>
   </section>
@@ -264,32 +265,38 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
     return data.full.order.map((id) => fullById.get(id)!).filter((ref) => ref && favoriteSet.has(ref.id))
   }, [page, data.full.order, data.compact.order, fullById, compactById, favoriteSet])
   const rawIndex = page === 'full' ? data.full.index : page === 'compact' ? data.compact.index : data.favoriteIndex
-  const currentIndex = Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0))
+  const currentIndex = page === 'favorites' ? Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0)) : rawIndex
   const currentRef = visibleRefs[currentIndex]
   const question = currentRef?.question
   const answer = currentRef && data.answers[currentRef.id]
+  const practiceOrder = page === 'favorites' ? [] : data[page].order
+  const previousIndex = findUnansweredIndex(practiceOrder, data.answers, currentIndex - 1, -1, false)
+  const nextIndex = findUnansweredIndex(practiceOrder, data.answers, currentIndex + 1)
+  const canMoveBack = page === 'favorites' ? currentIndex > 0 : previousIndex < practiceOrder.length
+  const canMoveNext = page === 'favorites' ? currentIndex < visibleRefs.length - 1
+    : Boolean(answer) || (nextIndex < practiceOrder.length && nextIndex !== currentIndex)
   const statRefs = page === 'full' ? refs.full : page === 'compact' ? refs.compact : visibleRefs
   const answeredCount = statRefs.filter((ref) => Boolean(data.answers[ref.id])).length
   const correctCount = statRefs.filter((ref) => data.answers[ref.id] === ref.question.answer).length
+  const questionNumber = page === 'favorites' ? currentIndex + 1 : answeredCount + (answer ? 0 : 1)
 
   useEffect(() => {
     if (!pendingAdvance || ownership !== 'writer') return
     if (pendingAdvance.page !== page || pendingAdvance.id !== currentRef?.id ||
-      pendingAdvance.index !== currentIndex || answer !== question?.answer || currentIndex >= visibleRefs.length - 1) {
+      pendingAdvance.index !== currentIndex || answer !== question?.answer) {
       setPendingAdvance(null)
       return
     }
     const timer = window.setTimeout(() => {
       mutate((previous) => {
         if (previous.page !== pendingAdvance.page) return previous
-        const key = previous.page === 'favorites' ? 'favoriteIndex' : previous.page
-        if (key === 'favoriteIndex') {
+        if (previous.page === 'favorites') {
           return previous.favoriteIndex === pendingAdvance.index && visibleRefs[previous.favoriteIndex]?.id === pendingAdvance.id
-            ? { ...previous, favoriteIndex: previous.favoriteIndex + 1 } : previous
+            ? movePractice(previous, 1) : previous
         }
-        const bank = previous[key]
+        const bank = previous[previous.page]
         return bank.index === pendingAdvance.index && bank.order[bank.index] === pendingAdvance.id
-          ? { ...previous, [key]: { ...bank, index: bank.index + 1 } } : previous
+          ? movePractice(previous, 1) : previous
       })
       setPendingAdvance(null)
     }, 1000)
@@ -298,7 +305,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
 
   function switchPage(nextPage: Page) {
     setPendingAdvance(null)
-    mutate((previous) => previous.page === nextPage ? previous : { ...previous, page: nextPage })
+    mutate((previous) => resumePractice(previous, nextPage))
   }
   function toggleFavorite() {
     if (!currentRef) return
@@ -309,16 +316,14 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
   function answerQuestion(selectedAnswer: OptionKey) {
     if (!currentRef || !question || answer) return
     if (mutate((previous) => recordAnswer(previous, currentRef.id, selectedAnswer, question.answer)) &&
-      selectedAnswer === question.answer && currentIndex < visibleRefs.length - 1) {
+      selectedAnswer === question.answer && (page !== 'favorites' || canMoveNext)) {
       setPendingAdvance({ page, id: currentRef.id, index: currentIndex })
     }
   }
-  function moveTo(index: number) {
-    if (index < 0 || index >= visibleRefs.length) return
+  function moveTo(direction: 1 | -1) {
+    if (direction === -1 ? !canMoveBack : !canMoveNext) return
     setPendingAdvance(null)
-    mutate((previous) => page === 'favorites'
-      ? { ...previous, favoriteIndex: index }
-      : { ...previous, [page]: { ...previous[page], index } })
+    mutate((previous) => movePractice(previous, direction))
   }
   function restart() {
     setPendingAdvance(null)
@@ -383,15 +388,24 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
             : page === 'full' ? '把每一道题，做得更明白。'
               : `${refs.compact.length} 道核心题，集中练起来。`}</h1>
           <p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。'
-            : page === 'full' ? '从原题库随机练习，答对后 1 秒自动进入下一题。'
-              : '从全量原题中精选 300 道，保留原选项与配图。'}</p>
+            : page === 'full' ? '自动跳过已刷题，答对后 1 秒继续；精选与全量共用进度。'
+              : '从全量原题中精选 300 道，共用答题记录，自动跳过已刷题。'}</p>
         </section>
         <Stats answered={answeredCount} total={statRefs.length} correct={correctCount} favorites={favoriteSet.size} />
-        {currentRef ? <QuestionCard refItem={currentRef} index={currentIndex} total={visibleRefs.length}
+        {currentRef ? <QuestionCard refItem={currentRef} index={questionNumber - 1} total={visibleRefs.length}
           selected={answer} favorite={favoriteSet.has(currentRef.id)} writable={writable}
-          pendingAdvance={pendingAdvance?.id === currentRef.id} onFavorite={toggleFavorite}
+          pendingAdvance={pendingAdvance?.id === currentRef.id} canMoveBack={canMoveBack} canMoveNext={canMoveNext}
+          onFavorite={toggleFavorite}
           onAnswer={answerQuestion} onMove={moveTo} />
-          : <section className="empty-card">
+          : page !== 'favorites' ? <section className="empty-card" role="status">
+            <div className="empty-icon"><Icon name="check" size={27} /></div>
+            <h2>{page === 'compact' ? '精选题已全部刷完' : '全量题库已全部刷完'}</h2>
+            <p>已刷完 {statRefs.length} 道题，答题记录已保留。可以到我的收藏回看错题。</p>
+            <button className="button-primary" disabled={!writable}
+              onClick={() => switchPage(page === 'compact' ? 'full' : 'favorites')}>
+              {page === 'compact' ? '继续刷全题库' : '回看我的收藏'} <Icon name="arrowRight" size={17} />
+            </button>
+          </section> : <section className="empty-card">
             <div className="empty-icon"><Icon name="bookmark" size={27} /></div>
             <h2>还没有收藏的题目</h2>
             <p>答错的题会自动加入这里，也可以点击书签收藏。</p>

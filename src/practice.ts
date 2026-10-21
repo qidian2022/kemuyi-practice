@@ -108,15 +108,18 @@ export function parseState(value: unknown, questions: Question[], selected: Sele
     answers: validAnswers(root.answers, byId),
     favorites,
     page: root.page === 'compact' || root.page === 'favorites' ? root.page : 'full',
-    full: { order: fullOrder, index: safeIndex(full.index, fullOrder.length) },
-    compact: { order: compactOrder, index: safeIndex(compact.index, compactOrder.length) },
+    full: { order: fullOrder, index: full.index === fullOrder.length ? fullOrder.length : safeIndex(full.index, fullOrder.length) },
+    compact: { order: compactOrder, index: compact.index === compactOrder.length ? compactOrder.length : safeIndex(compact.index, compactOrder.length) },
     favoriteIndex: safeIndex(root.favoriteIndex, favorites.length),
   }
 }
 
 export function loadMigratedState(questions: Question[], selected: SelectedQuestion[]): { state: PracticeData; needsSave: boolean } {
   const current = parseState(read(STORAGE_KEY), questions, selected)
-  if (current) return { state: current, needsSave: false }
+  if (current) {
+    const resumed = resumePractice(current)
+    return { state: resumed, needsSave: resumed !== current }
+  }
 
   const state = initialState(questions, selected)
   const old = object(read(OLD_STORAGE_KEY))
@@ -148,7 +151,7 @@ export function loadMigratedState(questions: Question[], selected: SelectedQuest
     : source.mode === 'favorites' ? 'favorites' : oldBank === 'compact' ? 'compact' : 'full'
   const favoriteIndex = Number(readText(FAVORITE_INDEX_KEY))
   state.favoriteIndex = safeIndex(favoriteIndex, state.favorites.length)
-  return { state, needsSave: true }
+  return { state: resumePractice(state), needsSave: true }
 }
 
 export function saveState(state: PracticeData, hasWriteLock: boolean): boolean {
@@ -179,6 +182,39 @@ export function recordAnswer(previous: PracticeData, questionId: number, answer:
     favorites: answer !== correctAnswer && !previous.favorites.includes(questionId)
       ? [...previous.favorites, questionId] : previous.favorites,
   }
+}
+
+// A bank-length index means that every question in this bank has been answered.
+export function findUnansweredIndex(
+  order: number[], answers: PracticeData['answers'], start: number,
+  direction: 1 | -1 = 1, wrap = true,
+): number {
+  for (let offset = 0; offset < order.length; offset += 1) {
+    const position = start + offset * direction
+    if (!wrap && (position < 0 || position >= order.length)) break
+    const index = ((position % order.length) + order.length) % order.length
+    if (!answers[order[index]]) return index
+  }
+  return order.length
+}
+
+export function resumePractice(previous: PracticeData, page: Page = previous.page): PracticeData {
+  if (page === 'favorites') return previous.page === page ? previous : { ...previous, page }
+  const bank = previous[page]
+  const index = findUnansweredIndex(bank.order, previous.answers, bank.index)
+  return previous.page === page && bank.index === index ? previous
+    : { ...previous, page, [page]: { ...bank, index } }
+}
+
+export function movePractice(previous: PracticeData, direction: 1 | -1): PracticeData {
+  if (previous.page === 'favorites') {
+    const index = safeIndex(previous.favoriteIndex + direction, previous.favorites.length)
+    return index === previous.favoriteIndex ? previous : { ...previous, favoriteIndex: index }
+  }
+  const bank = previous[previous.page]
+  const index = findUnansweredIndex(bank.order, previous.answers, bank.index + direction, direction, direction === 1)
+  if (index === bank.index || (direction === -1 && index === bank.order.length)) return previous
+  return { ...previous, [previous.page]: { ...bank, index } }
 }
 
 export function restartState(previous: PracticeData, bank: 'full' | 'compact', selectedIds: Set<number>): PracticeData {
