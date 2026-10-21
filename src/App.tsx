@@ -118,7 +118,7 @@ function QuestionCard({ refItem, index, total, selected, favorite, writable, pen
         <div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div>
         <div className="explanation-content">
           <strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong>
-          <p>{question.explanation || '暂无解析'}</p>
+          <p>解析：{question.explanation || '原网站暂未提供解析。'}</p>
           <a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>
           {selected === question.answer && pendingAdvance && <span className="auto-result-note">即将进入下一题</span>}
           {selected !== question.answer && favorite && <span className="auto-result-note">已在我的收藏中</span>}
@@ -402,7 +402,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
         <div className="bottom-row">
           <div className="source-note">
             题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a>
-            {' '}· 采集于 2026-09-23 · 内容未经官方核验{currentRef?.bank === 'compact' && ' · 精选题未收录解析'}
+            {' '}· 采集于 2026-09-23 · 内容未经官方核验
           </div>
           <button className="reset-link" disabled={!writable} onClick={() => { setPendingAdvance(null); setShowReset(true) }}>
             <Icon name="restart" size={16} /> 重新开始

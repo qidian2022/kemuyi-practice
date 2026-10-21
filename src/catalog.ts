@@ -8,7 +8,7 @@ export function makeRefs(questions: Question[], selected: SelectedQuestion[]): {
     compact: selected.map(({ id, chapter }) => {
       const source = byId.get(id)
       if (!source) throw new Error(`精选题 ${id} 不在原题库中`)
-      return { bank: 'compact', id, question: { ...source, chapter, explanation: '' } }
+      return { bank: 'compact', id, question: { ...source, chapter } }
     }),
   }
 }
