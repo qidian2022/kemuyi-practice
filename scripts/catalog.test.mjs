@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { makeRefs } from '../src/catalog.ts'
+import { deduplicateCatalog, makeRefs } from '../src/catalog.ts'
 import { initialState, movePractice, recordAnswer, resumePractice } from '../src/practice.ts'
 import { excludedFullIds, parseQuestions, parseSelectedQuestions } from './prepare-data.mjs'
 
@@ -40,8 +40,9 @@ test('all 300 selected questions retain their original website explanations', ()
 })
 
 
-test('completing 300 selected originals leaves exactly 1541 unanswered full-bank questions', () => {
-  const catalog = JSON.parse(readFileSync(new URL('../public/data/catalog.json', import.meta.url), 'utf8'))
+test('completing 300 selected originals leaves exactly 1350 unique unanswered full-bank questions', () => {
+  const raw = JSON.parse(readFileSync(new URL('../public/data/catalog.json', import.meta.url), 'utf8'))
+  const catalog = deduplicateCatalog(raw.questions, raw.selected)
   let state = initialState(catalog.questions, catalog.selected)
   state.page = 'compact'
   const byId = new Map(catalog.questions.map((question) => [question.id, question]))
@@ -56,7 +57,7 @@ test('completing 300 selected originals leaves exactly 1541 unanswered full-bank
     remaining.push(id)
     state = movePractice(recordAnswer(state, id, byId.get(id).answer, byId.get(id).answer), 1)
   }
-  assert.equal(remaining.length, 1541)
-  assert.equal(new Set(remaining).size, 1541)
-  assert.equal(Object.keys(state.answers).length, 1841)
+  assert.equal(remaining.length, 1350)
+  assert.equal(new Set(remaining).size, 1350)
+  assert.equal(Object.keys(state.answers).length, 1650)
 })

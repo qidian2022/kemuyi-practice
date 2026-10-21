@@ -1,5 +1,6 @@
 export type OptionKey = 'A' | 'B' | 'C' | 'D'
 export type Page = 'full' | 'compact' | 'favorites'
+export type QuestionAliases = Record<number, number>
 export type Question = {
   id: number
   question: string
@@ -114,22 +115,65 @@ export function parseState(value: unknown, questions: Question[], selected: Sele
   }
 }
 
-export function loadMigratedState(questions: Question[], selected: SelectedQuestion[]): { state: PracticeData; needsSave: boolean } {
-  const current = parseState(read(STORAGE_KEY), questions, selected)
+function remapSavedState(value: unknown, aliases: QuestionAliases): unknown {
+  if (!Object.keys(aliases).length) return value
+  const root = object(value)
+  const result = { ...root }
+  const remapId = (id: unknown): unknown => {
+    if (typeof id === 'number') return aliases[id] ?? id
+    if (typeof id === 'string' && id.startsWith('full:')) {
+      const original = Number(id.slice(5))
+      return aliases[original] ? `full:${aliases[original]}` : id
+    }
+    return id
+  }
+  if (root.answers) {
+    const answers: Record<number, unknown> = {}
+    // Keep a canonical answer when both copies were answered; otherwise recover the duplicate's answer.
+    const entries = Object.entries(object(root.answers)).sort(([a], [b]) => Number(Boolean(aliases[Number(a)])) - Number(Boolean(aliases[Number(b)])))
+    for (const [rawId, answer] of entries) {
+      const id = aliases[Number(rawId)] ?? Number(rawId)
+      if (!(id in answers)) answers[id] = answer
+    }
+    result.answers = answers
+  }
+  if (Array.isArray(root.favorites)) result.favorites = [...new Set(root.favorites.map(remapId))]
+  const remapOrder = (source: Record<string, unknown>): Record<string, unknown> => {
+    if (!Array.isArray(source.order)) return source
+    const original = source.order
+    const order = [...new Set(original.map(remapId))]
+    const mapped: Record<string, unknown> = { ...source, order }
+    for (const key of ['index', 'allIndex']) {
+      const index = source[key]
+      if (typeof index !== 'number' || !Number.isInteger(index)) continue
+      mapped[key] = index === original.length ? order.length
+        : index >= 0 && index < original.length ? order.indexOf(remapId(original[index])) : index
+    }
+    return mapped
+  }
+  for (const bank of ['full', 'compact']) if (root[bank]) result[bank] = remapOrder(object(root[bank]))
+  const mapped = remapOrder(result)
+  return JSON.stringify(mapped) === JSON.stringify(value) ? value : mapped
+}
+
+export function loadMigratedState(questions: Question[], selected: SelectedQuestion[], aliases: QuestionAliases = {}): { state: PracticeData; needsSave: boolean } {
+  const stored = read(STORAGE_KEY)
+  const remapped = remapSavedState(stored, aliases)
+  const current = parseState(remapped, questions, selected)
   if (current) {
     const resumed = resumePractice(current)
-    return { state: resumed, needsSave: resumed !== current }
+    return { state: resumed, needsSave: resumed !== current || remapped !== stored }
   }
 
   const state = initialState(questions, selected)
-  const old = object(read(OLD_STORAGE_KEY))
-  const legacy = object(read(LEGACY_STORAGE_KEY))
+  const old = object(remapSavedState(read(OLD_STORAGE_KEY), aliases))
+  const legacy = object(remapSavedState(read(LEGACY_STORAGE_KEY), aliases))
   const source = Object.keys(old).length ? old : legacy
   const byId = new Map(questions.map((question) => [question.id, question]))
   state.answers = validAnswers(old.answers, byId)
   state.favorites = validIds(source.favorites, new Set(byId.keys()))
 
-  const savedFull = object(read(FULL_ORDER_KEY))
+  const savedFull = object(remapSavedState(read(FULL_ORDER_KEY), aliases))
   const savedFullOrder = savedFull.order ?? old.order
   state.full.order = validOrder(savedFullOrder, questions.map(({ id }) => id), 'full:')
   if (Array.isArray(savedFullOrder) && typeof savedFull.index === 'number') {
@@ -142,7 +186,7 @@ export function loadMigratedState(questions: Question[], selected: SelectedQuest
     state.full.index = safeIndex(old.allIndex, state.full.order.length)
   }
 
-  const savedCompact = object(read(COMPACT_ORDER_STORAGE_KEY))
+  const savedCompact = object(remapSavedState(read(COMPACT_ORDER_STORAGE_KEY), aliases))
   state.compact.order = validOrder(savedCompact.order, selected.map(({ id }) => id))
   state.compact.index = safeIndex(savedCompact.allIndex, state.compact.order.length)
   const page = readText(ACTIVE_PAGE_KEY)

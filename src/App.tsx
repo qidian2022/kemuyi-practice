@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import catalogVersion from './generated/catalog-version.json'
-import { makeRefs, type QuestionRef } from './catalog'
+import { deduplicateCatalog, makeRefs, type QuestionRef } from './catalog'
 import {
   STORAGE_KEY, clearLegacyState, findUnansweredIndex, loadMigratedState, movePractice,
   recordAnswer, restartState, resumePractice, saveState,
@@ -137,12 +137,12 @@ function QuestionCard({ refItem, index, total, selected, favorite, writable, pen
 }
 
 function PracticeApp({ catalog }: { catalog: Catalog }) {
-  const { questions, selected } = catalog
+  const { questions, selected, aliases } = useMemo(() => deduplicateCatalog(catalog.questions, catalog.selected), [catalog])
   const refs = useMemo(() => makeRefs(questions, selected), [questions, selected])
   const fullById = useMemo(() => new Map(refs.full.map((ref) => [ref.id, ref])), [refs])
   const compactById = useMemo(() => new Map(refs.compact.map((ref) => [ref.id, ref])), [refs])
   const selectedIds = useMemo(() => new Set(selected.map(({ id }) => id)), [selected])
-  const [data, setData] = useState(() => loadMigratedState(questions, selected).state)
+  const [data, setData] = useState(() => loadMigratedState(questions, selected, aliases).state)
   const dataRef = useRef(data)
   const [ownership, setOwnership] = useState<Ownership>('checking')
   const ownershipRef = useRef(false)
@@ -195,7 +195,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
           if (active) setOwnership('reader')
           return
         }
-        const latest = loadMigratedState(questions, selected)
+        const latest = loadMigratedState(questions, selected, aliases)
         dataRef.current = latest.state
         setData(latest.state)
         setPendingAdvance(null)
@@ -218,7 +218,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
     queueMicrotask(() => { if (active) acquire(false) })
     const onStorage = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEY || ownershipRef.current) return
-      const latest = loadMigratedState(questions, selected)
+      const latest = loadMigratedState(questions, selected, aliases)
       dataRef.current = latest.state
       setData(latest.state)
     }
@@ -232,7 +232,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       channel.close()
       channelRef.current = null
     }
-  }, [questions, selected])
+  }, [questions, selected, aliases])
 
   function mutate(update: (previous: PracticeData) => PracticeData): boolean {
     if (!ownershipRef.current) return false
