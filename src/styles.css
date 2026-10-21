@@ -198,3 +198,14 @@ a { color: inherit; }
   .question-body h2 { font-size: 18px; }
   .bottom-row { flex-direction: column; }
 }
+
+.favorite-practice-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 18px; padding: 18px 20px; border: 1px solid #dce7d5; border-radius: 13px; background: #f0f7eb; }
+.favorite-practice-bar strong { color: #315c3b; font-size: 14px; }
+.favorite-practice-bar p { color: #73856f; font-size: 12px; line-height: 1.7; margin: 5px 0 0; }
+.favorite-practice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .favorite-practice-bar { padding: 14px; gap: 12px; margin-bottom: 12px; }
+  .favorite-practice-bar p { font-size: 11px; }
+  .favorite-practice-actions { width: 100%; }
+  .favorite-practice-actions button { flex: 1; }
+}

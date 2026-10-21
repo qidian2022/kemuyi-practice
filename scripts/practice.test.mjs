@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import {
   COMPACT_ORDER_STORAGE_KEY, FULL_ORDER_KEY, LEGACY_STORAGE_KEY, OLD_STORAGE_KEY, STORAGE_KEY,
   clearLegacyState, findUnansweredIndex, initialState, loadMigratedState, movePractice, parseState,
-  recordAnswer, restartState, resumePractice, saveState,
+  recordAnswer, restartState, resumePractice, saveState, startFavoritePractice, toggleFavoriteState,
 } from '../src/practice.ts'
 
 const questions = [
@@ -146,4 +146,103 @@ test('finishing the last question survives refresh and favorites still show answ
   assert.deepEqual(restarted.answers, {})
   assert.equal(restarted.full.index, 0)
   assert.deepEqual(restarted.favorites, [2])
+})
+
+test('favorite retry hides old answers and records a separate round without changing bank progress', () => {
+  storage()
+  const original = initialState(questions, selected)
+  original.answers = { 1: 'A', 2: 'A' }
+  original.favorites = [1, 2]
+  original.full = { order: [2, 1], index: 2 }
+  original.compact.index = 1
+  const round = startFavoritePractice(original)
+  assert.equal(round.page, 'favorites')
+  assert.deepEqual(round.favoritePractice.answers, {})
+  assert.deepEqual(new Set(round.favoritePractice.order), new Set([1, 2]))
+  round.favoritePractice.order = [1, 2]
+  const answered = recordAnswer(round, 1, 'B', 'B')
+  assert.deepEqual(answered.favoritePractice.answers, { 1: 'B' })
+  assert.equal(recordAnswer(answered, 1, 'A', 'B'), answered)
+  assert.equal(recordAnswer(answered, 999, 'A', 'A'), answered)
+  assert.deepEqual(answered.answers, original.answers)
+  assert.deepEqual(answered.full, original.full)
+  assert.deepEqual(answered.compact, original.compact)
+  assert.deepEqual(answered.favorites, [1, 2])
+  assert.equal(answered.favoritePractice.index, 0, 'keep feedback visible until navigation')
+  const next = movePractice(answered, 1)
+  assert.equal(next.favoritePractice.index, 1)
+  assert.equal(saveState(next, true), true)
+  assert.deepEqual(loadMigratedState(questions, selected).state, next)
+  const wrong = recordAnswer(next, 2, 'B', 'A')
+  assert.deepEqual(wrong.favoritePractice.answers, { 1: 'B', 2: 'B' })
+  assert.equal(wrong.favoritePractice.index, 1)
+  const completed = movePractice(wrong, 1)
+  assert.equal(completed.favoritePractice.index, 2)
+  assert.equal(saveState(completed, true), true)
+  assert.deepEqual(loadMigratedState(questions, selected), { state: completed, needsSave: false })
+  const restarted = restartState(completed, 'favorites', new Set([1]))
+  assert.deepEqual(restarted.favoritePractice.answers, {})
+  assert.equal(restarted.favoritePractice.index, 0)
+  assert.deepEqual(restarted.answers, original.answers)
+  assert.deepEqual(restarted.full, original.full)
+  assert.deepEqual(restarted.compact, original.compact)
+  assert.deepEqual(restarted.favorites, original.favorites)
+})
+
+test('favorite retry resumes unanswered questions across banks and wraps over skipped questions', () => {
+  const state = initialState(questions, selected)
+  state.favorites = [1, 2, 3, 4]
+  const round = startFavoritePractice(state)
+  round.favoritePractice = { order: [1, 2, 3, 4], index: 0, answers: { 2: 'A' } }
+  const next = movePractice(round, 1)
+  assert.equal(next.favoritePractice.index, 2)
+  assert.equal(movePractice(next, -1).favoritePractice.index, 0)
+  assert.equal(movePractice(round, -1), round)
+  const wrong = recordAnswer(next, 3, 'B', 'A')
+  const full = resumePractice(wrong, 'full')
+  assert.equal(resumePractice(full, 'favorites').favoritePractice.index, 3)
+  const last = recordAnswer(movePractice(wrong, 1), 4, 'A', 'A')
+  assert.equal(movePractice(last, 1).favoritePractice.index, 0)
+  assert.deepEqual(last.answers, {})
+})
+
+test('removing favorites keeps retry answers and cursors aligned, including completion', () => {
+  const state = initialState(questions, selected)
+  state.full.order = [1, 2, 3]
+  state.favorites = [1, 2, 3]
+  state.favoriteIndex = 1
+  state.page = 'favorites'
+  state.favoritePractice = { order: [1, 2, 3], index: 1, answers: { 1: 'B' } }
+  const earlierRemoved = toggleFavoriteState(state, 1)
+  assert.deepEqual(earlierRemoved.favorites, [2, 3])
+  assert.equal(earlierRemoved.favoriteIndex, 0)
+  assert.deepEqual(earlierRemoved.favoritePractice, { order: [2, 3], index: 0, answers: {} })
+  const currentRemoved = toggleFavoriteState(earlierRemoved, 2)
+  assert.deepEqual(currentRemoved.favoritePractice, { order: [3], index: 0, answers: {} })
+  const completed = movePractice(recordAnswer(currentRemoved, 3, 'A', 'A'), 1)
+  assert.equal(completed.favoritePractice.index, 1)
+  const allRemoved = toggleFavoriteState(completed, 3)
+  assert.deepEqual(allRemoved.favoritePractice, { order: [], index: 0, answers: {} })
+  assert.equal(startFavoritePractice(allRemoved), allRemoved)
+  const added = toggleFavoriteState(earlierRemoved, 1)
+  assert.deepEqual(added.favoritePractice.order, [2, 3], 'new favorites join the next round')
+  assert.deepEqual(new Set(startFavoritePractice(added).favoritePractice.order), new Set([1, 2, 3]))
+})
+
+test('existing saves remain compatible and malformed retry records cannot restore stale questions', () => {
+  storage()
+  const state = initialState(questions, selected)
+  const { favoritePractice: ignored, ...oldSave } = state
+  assert.equal(parseState(oldSave, questions, selected).favoritePractice, null)
+  state.favorites = [1]
+  state.favoritePractice = { order: [1, 2, 999, 1], index: 99, answers: { 1: 'B', 2: 'A', 999: 'A' } }
+  assert.deepEqual(parseState(state, questions, selected).favoritePractice, { order: [1], index: 0, answers: { 1: 'B' } })
+  state.favoritePractice = { order: 'invalid', index: -1, answers: {} }
+  assert.equal(parseState(state, questions, selected).favoritePractice, null)
+  state.favoritePractice = { order: [1], index: 1, answers: { 1: 'C' } }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  assert.deepEqual(loadMigratedState(questions, selected).state.favoritePractice, { order: [1], index: 1, answers: {} })
+  state.page = 'favorites'
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  assert.equal(loadMigratedState(questions, selected).state.favoritePractice.index, 0)
 })

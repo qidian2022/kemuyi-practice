@@ -3,7 +3,7 @@ import catalogVersion from './generated/catalog-version.json'
 import { deduplicateCatalog, makeRefs, type QuestionRef } from './catalog'
 import {
   STORAGE_KEY, clearLegacyState, findUnansweredIndex, loadMigratedState, movePractice,
-  recordAnswer, restartState, resumePractice, saveState,
+  recordAnswer, restartState, resumePractice, saveState, startFavoritePractice, toggleFavoriteState,
   type OptionKey, type Page, type PracticeData, type Question, type SelectedQuestion,
 } from './practice'
 
@@ -64,14 +64,16 @@ function Stats({ answered, total, correct, favorites }: { answered: number; tota
   </section>
 }
 
-function ResetDialog({ compact, onClose, onConfirm }: { compact: boolean; onClose: () => void; onConfirm: () => void }) {
+function ResetDialog({ page, onClose, onConfirm }: { page: Page; onClose: () => void; onConfirm: () => void }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget) onClose()
   }}>
     <div className="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div className="modal-symbol"><Icon name="restart" size={23} /></div>
-      <h2 id="reset-title">重新开始练习？</h2>
-      <p>{compact
+      <h2 id="reset-title">{page === 'favorites' ? '重新重刷收藏？' : '重新开始练习？'}</h2>
+      <p>{page === 'favorites'
+        ? '将当前收藏重新打乱，开始新一轮练习。本轮重刷成绩会清空；原题库答题记录和收藏保留。'
+        : page === 'compact'
         ? '这 300 道题在两个入口的答题记录都会清空，精选题序重新打乱；收藏保留。'
         : '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。'}</p>
       <div className="modal-actions">
@@ -259,26 +261,29 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
 
   const favoriteSet = useMemo(() => new Set(data.favorites), [data.favorites])
   const page = data.page
+  const favoritePractice = page === 'favorites' ? data.favoritePractice : null
   const visibleRefs = useMemo(() => {
     if (page === 'full') return data.full.order.map((id) => fullById.get(id)!).filter(Boolean)
     if (page === 'compact') return data.compact.order.map((id) => compactById.get(id)!).filter(Boolean)
-    return data.full.order.map((id) => fullById.get(id)!).filter((ref) => ref && favoriteSet.has(ref.id))
-  }, [page, data.full.order, data.compact.order, fullById, compactById, favoriteSet])
-  const rawIndex = page === 'full' ? data.full.index : page === 'compact' ? data.compact.index : data.favoriteIndex
-  const currentIndex = page === 'favorites' ? Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0)) : rawIndex
+    return (favoritePractice?.order ?? data.full.order).map((id) => fullById.get(id)!).filter((ref) => ref && favoriteSet.has(ref.id))
+  }, [page, data.full.order, data.compact.order, fullById, compactById, favoriteSet, favoritePractice?.order])
+  const rawIndex = page === 'full' ? data.full.index : page === 'compact' ? data.compact.index : favoritePractice?.index ?? data.favoriteIndex
+  const currentIndex = page === 'favorites' && !favoritePractice ? Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0)) : rawIndex
   const currentRef = visibleRefs[currentIndex]
   const question = currentRef?.question
-  const answer = currentRef && data.answers[currentRef.id]
-  const practiceOrder = page === 'favorites' ? [] : data[page].order
-  const previousIndex = findUnansweredIndex(practiceOrder, data.answers, currentIndex - 1, -1, false)
-  const nextIndex = findUnansweredIndex(practiceOrder, data.answers, currentIndex + 1)
-  const canMoveBack = page === 'favorites' ? currentIndex > 0 : previousIndex < practiceOrder.length
-  const canMoveNext = page === 'favorites' ? currentIndex < visibleRefs.length - 1
+  const activeAnswers = favoritePractice?.answers ?? data.answers
+  const answer = currentRef && activeAnswers[currentRef.id]
+  const practiceOrder = page === 'favorites' ? favoritePractice?.order ?? [] : data[page].order
+  const previousIndex = findUnansweredIndex(practiceOrder, activeAnswers, currentIndex - 1, -1, false)
+  const nextIndex = findUnansweredIndex(practiceOrder, activeAnswers, currentIndex + 1)
+  const reviewing = page === 'favorites' && !favoritePractice
+  const canMoveBack = reviewing ? currentIndex > 0 : previousIndex < practiceOrder.length
+  const canMoveNext = reviewing ? currentIndex < visibleRefs.length - 1
     : Boolean(answer) || (nextIndex < practiceOrder.length && nextIndex !== currentIndex)
   const statRefs = page === 'full' ? refs.full : page === 'compact' ? refs.compact : visibleRefs
-  const answeredCount = statRefs.filter((ref) => Boolean(data.answers[ref.id])).length
-  const correctCount = statRefs.filter((ref) => data.answers[ref.id] === ref.question.answer).length
-  const questionNumber = page === 'favorites' ? currentIndex + 1 : answeredCount + (answer ? 0 : 1)
+  const answeredCount = statRefs.filter((ref) => Boolean(activeAnswers[ref.id])).length
+  const correctCount = statRefs.filter((ref) => activeAnswers[ref.id] === ref.question.answer).length
+  const questionNumber = reviewing ? currentIndex + 1 : answeredCount + (answer ? 0 : 1)
 
   useEffect(() => {
     if (!pendingAdvance || ownership !== 'writer') return
@@ -291,7 +296,8 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       mutate((previous) => {
         if (previous.page !== pendingAdvance.page) return previous
         if (previous.page === 'favorites') {
-          return previous.favoriteIndex === pendingAdvance.index && visibleRefs[previous.favoriteIndex]?.id === pendingAdvance.id
+          const index = previous.favoritePractice?.index ?? previous.favoriteIndex
+          return index === pendingAdvance.index && visibleRefs[index]?.id === pendingAdvance.id
             ? movePractice(previous, 1) : previous
         }
         const bank = previous[previous.page]
@@ -310,13 +316,13 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
   function toggleFavorite() {
     if (!currentRef) return
     const id = currentRef.id
-    mutate((previous) => ({ ...previous, favorites: previous.favorites.includes(id)
-      ? previous.favorites.filter((favorite) => favorite !== id) : [...previous.favorites, id] }))
+    setPendingAdvance(null)
+    mutate((previous) => toggleFavoriteState(previous, id))
   }
   function answerQuestion(selectedAnswer: OptionKey) {
     if (!currentRef || !question || answer) return
     if (mutate((previous) => recordAnswer(previous, currentRef.id, selectedAnswer, question.answer)) &&
-      selectedAnswer === question.answer && (page !== 'favorites' || canMoveNext)) {
+      selectedAnswer === question.answer && (!reviewing || canMoveNext)) {
       setPendingAdvance({ page, id: currentRef.id, index: currentIndex })
     }
   }
@@ -327,7 +333,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
   }
   function restart() {
     setPendingAdvance(null)
-    mutate((previous) => restartState(previous, page === 'compact' ? 'compact' : 'full', selectedIds))
+    mutate((previous) => restartState(previous, page, selectedIds))
     setShowReset(false)
   }
 
@@ -387,17 +393,41 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
           <h1>{page === 'favorites' ? '把值得回看的题，留在这里。'
             : page === 'full' ? '把每一道题，做得更明白。'
               : `${refs.compact.length} 道核心题，集中练起来。`}</h1>
-          <p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。'
+          <p>{page === 'favorites' ? '手动收藏和答错题都在这里，点击重刷可隐藏旧答案，再练一遍。'
             : page === 'full' ? '自动跳过已刷题，答对后 1 秒继续；精选与全量共用进度。'
               : '从全量原题中精选 300 道，共用答题记录，自动跳过已刷题。'}</p>
         </section>
+        {page === 'favorites' && favoriteSet.size > 0 && <section className="favorite-practice-bar" aria-label="收藏练习模式">
+          <div>
+            <strong>{favoritePractice ? '正在重刷收藏' : '回看收藏'}</strong>
+            <p>{favoritePractice ? '下方数据为本轮成绩；答对后自动下一题，答错后停留看解析。' : '重刷会随机出题，单独记录本轮成绩，保留原题库进度。'}</p>
+          </div>
+          <div className="favorite-practice-actions">
+            {favoritePractice && <button className="button-secondary" disabled={!writable} onClick={() => {
+              setPendingAdvance(null)
+              mutate((previous) => ({ ...previous, favoritePractice: null }))
+            }}>回看收藏</button>}
+            <button className="button-primary" disabled={!writable} onClick={() => {
+              setPendingAdvance(null)
+              if (favoritePractice) setShowReset(true)
+              else mutate(startFavoritePractice)
+            }}><Icon name="restart" size={16} />{favoritePractice ? '再刷一轮' : '重刷收藏'}</button>
+          </div>
+        </section>}
         <Stats answered={answeredCount} total={statRefs.length} correct={correctCount} favorites={favoriteSet.size} />
         {currentRef ? <QuestionCard refItem={currentRef} index={questionNumber - 1} total={visibleRefs.length}
           selected={answer} favorite={favoriteSet.has(currentRef.id)} writable={writable}
           pendingAdvance={pendingAdvance?.id === currentRef.id} canMoveBack={canMoveBack} canMoveNext={canMoveNext}
           onFavorite={toggleFavorite}
           onAnswer={answerQuestion} onMove={moveTo} />
-          : page !== 'favorites' ? <section className="empty-card" role="status">
+          : favoritePractice && favoriteSet.size > 0 ? <section className="empty-card" role="status">
+            <div className="empty-icon"><Icon name="check" size={27} /></div>
+            <h2>本轮收藏已刷完</h2>
+            <p>本轮已练 {answeredCount} 道，答对 {correctCount} 道。收藏和原题库进度已保留。</p>
+            <button className="button-primary" disabled={!writable} onClick={() => mutate(startFavoritePractice)}>
+              再刷一轮 <Icon name="restart" size={17} />
+            </button>
+          </section> : page !== 'favorites' ? <section className="empty-card" role="status">
             <div className="empty-icon"><Icon name="check" size={27} /></div>
             <h2>{page === 'compact' ? '精选题已全部刷完' : '全量题库已全部刷完'}</h2>
             <p>已刷完 {statRefs.length} 道题，答题记录已保留。可以到我的收藏回看错题。</p>
@@ -418,13 +448,13 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
             题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a>
             {' '}· 采集于 2026-09-23 · 内容未经官方核验
           </div>
-          <button className="reset-link" disabled={!writable} onClick={() => { setPendingAdvance(null); setShowReset(true) }}>
-            <Icon name="restart" size={16} /> 重新开始
+          <button className="reset-link" disabled={!writable || (page === 'favorites' && favoriteSet.size === 0)} onClick={() => { setPendingAdvance(null); setShowReset(true) }}>
+            <Icon name="restart" size={16} /> {page === 'favorites' ? '重新重刷收藏' : '重新开始'}
           </button>
         </div>
       </div>
     </main>
-    {showReset && <ResetDialog compact={page === 'compact'} onClose={() => setShowReset(false)} onConfirm={restart} />}
+    {showReset && <ResetDialog page={page} onClose={() => setShowReset(false)} onConfirm={restart} />}
   </div>
 }
 

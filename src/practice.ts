@@ -12,6 +12,11 @@ export type Question = {
   images: string[]
 }
 export type SelectedQuestion = { id: number; chapter: string }
+export type FavoritePractice = {
+  order: number[]
+  index: number
+  answers: Record<number, OptionKey>
+}
 export type PracticeData = {
   version: 3
   answers: Record<number, OptionKey>
@@ -20,6 +25,7 @@ export type PracticeData = {
   full: { order: number[]; index: number }
   compact: { order: number[]; index: number }
   favoriteIndex: number
+  favoritePractice: FavoritePractice | null
 }
 
 export const STORAGE_KEY = 'kemuyi-practice-v3'
@@ -49,6 +55,7 @@ export function initialState(questions: Question[], selected: SelectedQuestion[]
     full: { order: shuffled(questions.map(({ id }) => id)), index: 0 },
     compact: { order: shuffled(selected.map(({ id }) => id)), index: 0 },
     favoriteIndex: 0,
+    favoritePractice: null,
   }
 }
 
@@ -104,6 +111,14 @@ export function parseState(value: unknown, questions: Question[], selected: Sele
   const fullOrder = validOrder(full.order, questions.map(({ id }) => id))
   const compactOrder = validOrder(compact.order, selected.map(({ id }) => id))
   const favorites = validIds(root.favorites, new Set(byId.keys()))
+  const retry = object(root.favoritePractice)
+  const retryOrder = validIds(retry.order, new Set(favorites))
+  const retryById = new Map(retryOrder.map((id) => [id, byId.get(id)!]))
+  const favoritePractice = root.favoritePractice && Array.isArray(retry.order) ? {
+    order: retryOrder,
+    index: retry.index === retryOrder.length ? retryOrder.length : safeIndex(retry.index, retryOrder.length),
+    answers: validAnswers(retry.answers, retryById),
+  } : null
   return {
     version: 3,
     answers: validAnswers(root.answers, byId),
@@ -112,6 +127,7 @@ export function parseState(value: unknown, questions: Question[], selected: Sele
     full: { order: fullOrder, index: full.index === fullOrder.length ? fullOrder.length : safeIndex(full.index, fullOrder.length) },
     compact: { order: compactOrder, index: compact.index === compactOrder.length ? compactOrder.length : safeIndex(compact.index, compactOrder.length) },
     favoriteIndex: safeIndex(root.favoriteIndex, favorites.length),
+    favoritePractice,
   }
 }
 
@@ -151,6 +167,7 @@ function remapSavedState(value: unknown, aliases: QuestionAliases): unknown {
     }
     return mapped
   }
+  if (root.favoritePractice) result.favoritePractice = remapSavedState(root.favoritePractice, aliases)
   for (const bank of ['full', 'compact']) if (root[bank]) result[bank] = remapOrder(object(root[bank]))
   const mapped = remapOrder(result)
   return JSON.stringify(mapped) === JSON.stringify(value) ? value : mapped
@@ -219,6 +236,11 @@ export function clearLegacyState(): void {
 }
 
 export function recordAnswer(previous: PracticeData, questionId: number, answer: OptionKey, correctAnswer: OptionKey): PracticeData {
+  if (previous.page === 'favorites' && previous.favoritePractice) {
+    const retry = previous.favoritePractice
+    if (!retry.order.includes(questionId) || retry.answers[questionId]) return previous
+    return { ...previous, favoritePractice: { ...retry, answers: { ...retry.answers, [questionId]: answer } } }
+  }
   if (previous.answers[questionId]) return previous
   return {
     ...previous,
@@ -243,7 +265,13 @@ export function findUnansweredIndex(
 }
 
 export function resumePractice(previous: PracticeData, page: Page = previous.page): PracticeData {
-  if (page === 'favorites') return previous.page === page ? previous : { ...previous, page }
+  if (page === 'favorites') {
+    const retry = previous.favoritePractice
+    if (!retry) return previous.page === page ? previous : { ...previous, page }
+    const index = findUnansweredIndex(retry.order, retry.answers, retry.index)
+    return previous.page === page && retry.index === index ? previous
+      : { ...previous, page, favoritePractice: { ...retry, index } }
+  }
   const bank = previous[page]
   const index = findUnansweredIndex(bank.order, previous.answers, bank.index)
   return previous.page === page && bank.index === index ? previous
@@ -252,6 +280,12 @@ export function resumePractice(previous: PracticeData, page: Page = previous.pag
 
 export function movePractice(previous: PracticeData, direction: 1 | -1): PracticeData {
   if (previous.page === 'favorites') {
+    const retry = previous.favoritePractice
+    if (retry) {
+      const index = findUnansweredIndex(retry.order, retry.answers, retry.index + direction, direction, direction === 1)
+      if (index === retry.index || (direction === -1 && index === retry.order.length)) return previous
+      return { ...previous, favoritePractice: { ...retry, index } }
+    }
     const index = safeIndex(previous.favoriteIndex + direction, previous.favorites.length)
     return index === previous.favoriteIndex ? previous : { ...previous, favoriteIndex: index }
   }
@@ -261,7 +295,37 @@ export function movePractice(previous: PracticeData, direction: 1 | -1): Practic
   return { ...previous, [previous.page]: { ...bank, index } }
 }
 
-export function restartState(previous: PracticeData, bank: 'full' | 'compact', selectedIds: Set<number>): PracticeData {
+export function startFavoritePractice(previous: PracticeData): PracticeData {
+  if (!previous.favorites.length) return previous
+  return {
+    ...previous,
+    page: 'favorites',
+    favoritePractice: { order: shuffled(previous.favorites), index: 0, answers: {} },
+  }
+}
+
+export function toggleFavoriteState(previous: PracticeData, id: number): PracticeData {
+  const removing = previous.favorites.includes(id)
+  const favorites = removing ? previous.favorites.filter((favorite) => favorite !== id) : [...previous.favorites, id]
+  const reviewOrder = previous.full.order.filter((favorite) => previous.favorites.includes(favorite))
+  const removedIndex = reviewOrder.indexOf(id)
+  const favoriteIndex = safeIndex(previous.favoriteIndex - (removing && removedIndex < previous.favoriteIndex ? 1 : 0), favorites.length)
+  let favoritePractice = previous.favoritePractice
+  if (removing && favoritePractice?.order.includes(id)) {
+    const retry = favoritePractice
+    const removed = retry.order.indexOf(id)
+    const order = retry.order.filter((favorite) => favorite !== id)
+    const answers = { ...retry.answers }
+    delete answers[id]
+    let index = retry.index - (removed < retry.index ? 1 : 0)
+    if (removed === retry.index) index = findUnansweredIndex(order, answers, index)
+    favoritePractice = { order, answers, index }
+  }
+  return { ...previous, favorites, favoriteIndex, favoritePractice }
+}
+
+export function restartState(previous: PracticeData, bank: Page, selectedIds: Set<number>): PracticeData {
+  if (bank === 'favorites') return startFavoritePractice(previous)
   return {
     ...previous,
     answers: bank === 'full' ? {} : Object.fromEntries(
