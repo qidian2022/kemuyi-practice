@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { AccountPanel } from './AccountPanel'
+import type { AccountProgressStore } from './account'
 import catalogVersion from './generated/catalog-version.json'
 import { deduplicateCatalog, makeRefs, type QuestionRef } from './catalog'
 import {
-  STORAGE_KEY, clearLegacyState, findUnansweredIndex, loadMigratedState, movePractice,
-  recordAnswer, restartState, resumePractice, saveState, startFavoritePractice, toggleFavoriteState,
+  clearLegacyState, findUnansweredIndex, movePractice,
+  recordAnswer, restartState, resumePractice, startFavoritePractice, toggleFavoriteState,
   type OptionKey, type Page, type PracticeData, type Question, type SelectedQuestion,
 } from './practice'
 
@@ -12,6 +14,8 @@ type Ownership = 'checking' | 'writer' | 'reader' | 'unsupported'
 type PendingAdvance = { page: Page; id: number; index: number }
 const lockName = 'kemuyi-practice-writer-v3'
 const channelName = 'kemuyi-practice-takeover-v3'
+// React may remount a profile before the browser finishes releasing its previous lock.
+let previousWriterReleased: Promise<unknown> = Promise.resolve()
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
@@ -138,13 +142,13 @@ function QuestionCard({ refItem, index, total, selected, favorite, writable, pen
   </section>
 }
 
-function PracticeApp({ catalog }: { catalog: Catalog }) {
-  const { questions, selected, aliases } = useMemo(() => deduplicateCatalog(catalog.questions, catalog.selected), [catalog])
+function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; storage: AccountProgressStore; accountPanel: ReactNode }) {
+  const { questions, selected } = useMemo(() => deduplicateCatalog(catalog.questions, catalog.selected), [catalog])
   const refs = useMemo(() => makeRefs(questions, selected), [questions, selected])
   const fullById = useMemo(() => new Map(refs.full.map((ref) => [ref.id, ref])), [refs])
   const compactById = useMemo(() => new Map(refs.compact.map((ref) => [ref.id, ref])), [refs])
   const selectedIds = useMemo(() => new Set(selected.map(({ id }) => id)), [selected])
-  const [data, setData] = useState(() => loadMigratedState(questions, selected, aliases).state)
+  const [data, setData] = useState(() => storage.load().state)
   const dataRef = useRef(data)
   const [ownership, setOwnership] = useState<Ownership>('checking')
   const ownershipRef = useRef(false)
@@ -161,6 +165,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
 
   useEffect(() => {
     let active = true
+    let lockRequest: Promise<unknown> | null = null
     if (!navigator.locks || !window.BroadcastChannel) {
       setOwnership('unsupported')
       return
@@ -177,11 +182,11 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       }
       if (event.data?.type !== 'takeover' || !ownershipRef.current) return
       if (unsavedRef.current) {
-        if (!saveState(dataRef.current, ownershipRef.current)) {
+        if (!storage.save(dataRef.current, ownershipRef.current)) {
           channel.postMessage({ type: 'save-failed' })
           return
         }
-        clearLegacyState()
+        (!storage.id && clearLegacyState())
       }
       unsavedRef.current = false
       setUnsaved(false)
@@ -192,18 +197,18 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       releaseRef.current?.()
     }
     const acquire = (wait: boolean, signal?: AbortSignal) => {
-      void navigator.locks.request(lockName, wait ? { mode: 'exclusive', signal } : { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      lockRequest = navigator.locks.request(lockName, wait ? { mode: 'exclusive', signal } : { mode: 'exclusive', ifAvailable: true }, async (lock) => {
         if (!active || !lock) {
           if (active) setOwnership('reader')
           return
         }
-        const latest = loadMigratedState(questions, selected, aliases)
+        const latest = storage.load()
         dataRef.current = latest.state
         setData(latest.state)
         setPendingAdvance(null)
         ownershipRef.current = true
-        const saved = !latest.needsSave || saveState(latest.state, ownershipRef.current)
-        if (saved) clearLegacyState()
+        const saved = !latest.needsSave || storage.save(latest.state, ownershipRef.current)
+        if (saved) (!storage.id && clearLegacyState())
         unsavedRef.current = !saved
         setUnsaved(!saved)
         setWaiting(false)
@@ -217,10 +222,10 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       }).catch(() => { if (active) { setOwnership('reader'); setWaiting(false); takeoverAbortRef.current = null } })
     }
     acquireRef.current = acquire
-    queueMicrotask(() => { if (active) acquire(false) })
+    void previousWriterReleased.then(() => { if (active) acquire(false) })
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY || ownershipRef.current) return
-      const latest = loadMigratedState(questions, selected, aliases)
+      if (event.key !== storage.key || ownershipRef.current) return
+      const latest = storage.load()
       dataRef.current = latest.state
       setData(latest.state)
     }
@@ -230,22 +235,45 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
       ownershipRef.current = false
       takeoverAbortRef.current?.abort()
       releaseRef.current?.()
+      if (lockRequest) previousWriterReleased = lockRequest
       window.removeEventListener('storage', onStorage)
       channel.close()
       channelRef.current = null
     }
-  }, [questions, selected, aliases])
+  }, [storage])
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('kemuyi-writer', { detail: { key: storage.key, writable: ownership === 'writer', unsaved } }))
+    return () => { window.dispatchEvent(new CustomEvent('kemuyi-writer', { detail: { key: storage.key, writable: false, unsaved: unsavedRef.current } })) }
+  }, [ownership, storage])
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('kemuyi-unsaved', { detail: { key: storage.key, unsaved } }))
+  }, [unsaved, storage])
+
+  useEffect(() => {
+    const flush = (event: Event) => {
+      const detail = (event as CustomEvent<{ key: string; ok: boolean; data?: PracticeData }>).detail
+      if (detail.key !== storage.key) return
+      detail.data = dataRef.current
+      if (!unsavedRef.current) { detail.ok = true; return }
+      detail.ok = ownershipRef.current && storage.save(dataRef.current, true)
+      if (detail.ok) { unsavedRef.current = false; setUnsaved(false) }
+    }
+    window.addEventListener('kemuyi-flush', flush)
+    return () => window.removeEventListener('kemuyi-flush', flush)
+  }, [storage])
 
   function mutate(update: (previous: PracticeData) => PracticeData): boolean {
-    if (!ownershipRef.current) return false
+    if (!ownershipRef.current || storage.error) return false
     const next = update(dataRef.current)
     if (next === dataRef.current) return false
-    const saved = saveState(next, ownershipRef.current)
+    const saved = storage.save(next, ownershipRef.current)
     dataRef.current = next
     setData(next)
     unsavedRef.current = !saved
     setUnsaved(!saved)
-    if (saved) clearLegacyState()
+    if (saved) (!storage.id && clearLegacyState())
     return true
   }
 
@@ -337,7 +365,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
     setShowReset(false)
   }
 
-  const writable = ownership === 'writer'
+  const writable = ownership === 'writer' && !storage.error
   const pageName = page === 'full' ? '全量题库' : page === 'compact' ? 'C1/C2精简' : '我的收藏'
   return <div className="app-shell">
     <aside className="sidebar">
@@ -365,7 +393,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
           <strong>每天进步一点点</strong>
           <p>答错的题会自动加入收藏，方便之后集中复习。</p>
         </div>
-        <div className="side-foot">数据仅保存在当前浏览器</div>
+        <div className="side-foot">游客本机保存 · 账户跨设备同步</div>
       </div>
     </aside>
     <main className="main-content">
@@ -380,6 +408,7 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
         </div>
       </header>
       <div className="content-wrap">
+        {accountPanel}
         {ownership !== 'writer' && <div className="storage-notice" role="status">
           <span>{ownership === 'checking' ? '正在检查练习记录…'
             : ownership === 'unsupported' ? '当前浏览器不支持安全的多标签页写入，请使用新版浏览器。'
@@ -387,7 +416,12 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
                 : waiting ? '正在接管练习，请稍候…' : '另一标签页正在练习；此页为只读。'}</span>
           {ownership === 'reader' && <button className="button-secondary" disabled={waiting} onClick={takeOver}>接管练习</button>}
         </div>}
-        {unsaved && <div className="storage-notice storage-error" role="alert">当前进度尚未保存，请保留此标签页并检查浏览器存储空间。</div>}
+        {unsaved && <div className="storage-notice storage-error" role="alert">当前进度尚未保存，请检查浏览器存储空间。
+          <button className="button-secondary" onClick={() => {
+            const detail = { key: storage.key, ok: false }
+            window.dispatchEvent(new CustomEvent('kemuyi-flush', { detail }))
+          }}>重试保存</button>
+        </div>}
         <section className="welcome">
           <div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div>
           <h1>{page === 'favorites' ? '把值得回看的题，留在这里。'
@@ -458,6 +492,13 @@ function PracticeApp({ catalog }: { catalog: Catalog }) {
   </div>
 }
 
+function AccountPractice({ catalog }: { catalog: Catalog }) {
+  const { questions, selected, aliases } = useMemo(() => deduplicateCatalog(catalog.questions, catalog.selected), [catalog])
+  return <AccountPanel questions={questions} selected={selected} aliases={aliases}>
+    {(storage, panel, identity, revision) => <PracticeApp key={`${identity}:${revision}`} catalog={catalog} storage={storage} accountPanel={panel} />}
+  </AccountPanel>
+}
+
 function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState(false)
@@ -474,7 +515,7 @@ function App() {
   }, [])
   if (error) return <div className="load-message" role="alert">题库加载失败，请刷新页面重试。</div>
   if (!catalog) return <div className="load-message" role="status">正在加载题库…</div>
-  return <PracticeApp catalog={catalog} />
+  return <AccountPractice catalog={catalog} />
 }
 
 export default App

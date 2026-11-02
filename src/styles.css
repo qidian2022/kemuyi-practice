@@ -209,3 +209,21 @@ a { color: inherit; }
   .favorite-practice-actions { width: 100%; }
   .favorite-practice-actions button { flex: 1; }
 }
+
+.account-bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px; margin-bottom:24px; padding:18px 22px; border:1px solid var(--border, #e4e8ee); border-radius:16px; background:#fff; }
+.account-bar > div:first-child { display:flex; flex-direction:column; gap:5px; }
+.account-bar strong { font-size:15px; }
+.account-bar span, .account-bar p { font-size:13px; color:#657186; line-height:1.7; }
+.account-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.account-actions button { font-size:13px; }
+.account-conflict { width:100%; border-top:1px solid #ead6ad; padding-top:14px; }
+.account-conflict p { margin:8px 0 14px; }
+.account-modal { max-height:90dvh; overflow-y:auto; }
+.account-modal form { display:flex; flex-direction:column; gap:14px; margin-top:20px; }
+.account-modal label { display:flex; flex-direction:column; gap:7px; font-size:14px; text-align:left; color:#344054; }
+.account-modal input { width:100%; padding:12px 14px; border:1px solid #cdd5df; border-radius:9px; font:inherit; background:#fff; color:#1f2937; }
+.account-modal input:focus { outline:2px solid #789b89; outline-offset:2px; }
+.account-modal .account-message { color:#8b521c; min-height:0; }
+.account-links { margin-top:18px; }
+.account-links button { border:0; background:none; color:#426c58; cursor:pointer; padding:6px 0; margin-right:8px; }
+@media (max-width:600px) { .account-bar { padding:15px; } .account-bar > .account-actions { width:100%; } .account-actions .button-secondary, .account-actions .button-primary { padding:9px 12px; } }

@@ -7,3 +7,10 @@ src/generated/
 AGENTS.md
 sources/
 /科目一_C1C2_300题精简题库.md
+
+.env
+.dev.vars
+.wrangler/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
