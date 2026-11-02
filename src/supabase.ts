@@ -112,7 +112,7 @@ export class SupabaseCloud {
   }
   async login(username: string, password: string, register: boolean): Promise<AccountSession> {
     const email = usernameEmail(username)
-    if (password.length < 10 || password.length > 128) throw new Error('密码需为 10–128 位')
+    if (password.length < 8 || password.length > 128) throw new Error('密码需为 8–128 位')
     // Check before signup so a misconfigured project cannot send confirmation mail.
     if (register) await this.registrationAllowed()
     const result = register

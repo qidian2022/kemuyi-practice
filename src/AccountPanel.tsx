@@ -239,10 +239,10 @@ export function AccountPanel({ questions, selected, aliases, children }: Props) 
       <div className="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
         <h2 id="account-title">{session && !expired ? '账户管理' : mode === 'register' ? '创建账户' : '登录账户'}</h2>
         {session && !expired ? <><p>当前账户：{session.user.username}。账户记录和游客记录分别保存，退出后可继续游客练习。</p><p>导入游客记录会保留游客原件，并合并答案和收藏；同题不同答案保留账户答案。</p><div className="account-actions"><button className="button-primary" disabled={!writer || busy} onClick={importGuest}>导入游客记录</button><button className="button-secondary" onClick={exportData}>导出本机记录</button><button className="button-secondary" disabled={busy} onClick={() => void logout()}>退出登录</button><button className="button-secondary" onClick={() => setOpen(false)}>关闭</button></div><p className="account-message" role="status">{message}</p></>
-          : <><p>{cloud ? '用户名使用 3–32 位字母、数字、下划线或短横线；密码至少 10 位。' : '账户服务部署并配置后即可登录。当前可继续刷题和导出本机记录。'}</p>
+          : <><p>{cloud ? '用户名使用 3–32 位字母、数字、下划线或短横线；密码至少 8 位。' : '账户服务部署并配置后即可登录。当前可继续刷题和导出本机记录。'}</p>
             <form onSubmit={(event) => void submit(event)}>
               <label>用户名<input autoComplete="username" name="username" value={username} onChange={(event) => setUsername(event.target.value)} pattern="[a-zA-Z0-9_-]{3,32}" minLength={3} maxLength={32} required /></label>
-              <label>密码<input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} name="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={128} required /></label>
+              <label>密码<input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} name="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={128} required /></label>
               <p className="account-message" role="status">{message}</p>
               <button className="button-primary" type="submit" disabled={!cloud || busy || unsaved}>{busy ? '正在处理…' : mode === 'register' ? '注册并登录' : '登录'}</button>
             </form>
