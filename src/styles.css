@@ -21,6 +21,12 @@ a { color: inherit; }
 .brand strong { display: block; font-size: 19px; letter-spacing: .02em; line-height: 1.35; }
 .brand span { display: block; margin-top: 2px; color: #a8c1b7; font-size: 11px; letter-spacing: .12em; }
 .nav-list { display: grid; gap: 6px; }
+.guide-link { text-decoration: none; }
+@media (max-width: 550px) {
+  .sidebar .nav-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sidebar .nav-item { justify-content: start; }
+}
+
 .nav-item { border: 0; background: transparent; color: #b6cec4; height: 49px; border-radius: 10px; display: flex; align-items: center; gap: 13px; text-align: left; padding: 0 14px; transition: background .2s, color .2s; }
 .nav-item:hover { background: #24423d; color: #fff; }
 .nav-item.active { background: #e8f4df; color: #1d3d32; font-weight: 700; box-shadow: 0 8px 18px #071a142b; }

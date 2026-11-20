@@ -394,6 +394,9 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
           onClick={() => switchPage('favorites')} aria-current={page === 'favorites' ? 'page' : undefined}>
           <Icon name="bookmark" /><span>我的收藏</span><small>{favoriteSet.size}</small>
         </button>
+        <a className="nav-item guide-link" href={`${import.meta.env.BASE_URL}guide.html`}>
+          <Icon name="grid" /><span>规则课堂</span>
+        </a>
       </nav>
       <div className="sidebar-bottom">
         <div className="side-card">
