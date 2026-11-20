@@ -302,16 +302,23 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
   const activeAnswers = favoritePractice?.answers ?? data.answers
   const answer = currentRef && activeAnswers[currentRef.id]
   const practiceOrder = page === 'favorites' ? favoritePractice?.order ?? [] : data[page].order
-  const previousIndex = findUnansweredIndex(practiceOrder, activeAnswers, currentIndex - 1, -1, false)
+  const visited = useRef<{ order: number[]; indices: number[] }>({ order: [], indices: [] })
   const nextIndex = findUnansweredIndex(practiceOrder, activeAnswers, currentIndex + 1)
   const reviewing = page === 'favorites' && !favoritePractice
-  const canMoveBack = reviewing ? currentIndex > 0 : previousIndex < practiceOrder.length
+  const canMoveBack = currentIndex > 0 || (!reviewing && visited.current.order === practiceOrder && visited.current.indices.length > 0)
   const canMoveNext = reviewing ? currentIndex < visibleRefs.length - 1
     : Boolean(answer) || (nextIndex < practiceOrder.length && nextIndex !== currentIndex)
   const statRefs = page === 'full' ? refs.full : page === 'compact' ? refs.compact : visibleRefs
   const answeredCount = statRefs.filter((ref) => Boolean(activeAnswers[ref.id])).length
   const correctCount = statRefs.filter((ref) => activeAnswers[ref.id] === ref.question.answer).length
-  const questionNumber = reviewing ? currentIndex + 1 : answeredCount + (answer ? 0 : 1)
+  function navigate(previous: PracticeData, direction: 1 | -1) {
+    if (reviewing) return movePractice(previous, direction)
+    if (visited.current.order !== practiceOrder) visited.current = { order: practiceOrder, indices: [] }
+    const history = visited.current.indices
+    const next = movePractice(previous, direction, direction === -1 ? history.pop() : undefined)
+    if (direction === 1 && next !== previous) history.push(currentIndex)
+    return next
+  }
 
   useEffect(() => {
     if (!pendingAdvance || ownership !== 'writer') return
@@ -326,11 +333,11 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
         if (previous.page === 'favorites') {
           const index = previous.favoritePractice?.index ?? previous.favoriteIndex
           return index === pendingAdvance.index && visibleRefs[index]?.id === pendingAdvance.id
-            ? movePractice(previous, 1) : previous
+            ? navigate(previous, 1) : previous
         }
         const bank = previous[previous.page]
         return bank.index === pendingAdvance.index && bank.order[bank.index] === pendingAdvance.id
-          ? movePractice(previous, 1) : previous
+          ? navigate(previous, 1) : previous
       })
       setPendingAdvance(null)
     }, 1000)
@@ -339,6 +346,7 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
 
   function switchPage(nextPage: Page) {
     setPendingAdvance(null)
+    visited.current.indices = []
     mutate((previous) => resumePractice(previous, nextPage))
   }
   function toggleFavorite() {
@@ -357,7 +365,7 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
   function moveTo(direction: 1 | -1) {
     if (direction === -1 ? !canMoveBack : !canMoveNext) return
     setPendingAdvance(null)
-    mutate((previous) => movePractice(previous, direction))
+    mutate((previous) => navigate(previous, direction))
   }
   function restart() {
     setPendingAdvance(null)
@@ -449,7 +457,7 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
           </div>
         </section>}
         <Stats answered={answeredCount} total={statRefs.length} correct={correctCount} favorites={favoriteSet.size} />
-        {currentRef ? <QuestionCard refItem={currentRef} index={questionNumber - 1} total={visibleRefs.length}
+        {currentRef ? <QuestionCard refItem={currentRef} index={currentIndex} total={visibleRefs.length}
           selected={answer} favorite={favoriteSet.has(currentRef.id)} writable={writable}
           pendingAdvance={pendingAdvance?.id === currentRef.id} canMoveBack={canMoveBack} canMoveNext={canMoveNext}
           onFavorite={toggleFavorite}
@@ -458,13 +466,15 @@ function PracticeApp({ catalog, storage, accountPanel }: { catalog: Catalog; sto
             <div className="empty-icon"><Icon name="check" size={27} /></div>
             <h2>本轮收藏已刷完</h2>
             <p>本轮已练 {answeredCount} 道，答对 {correctCount} 道。收藏和原题库进度已保留。</p>
+            <button className="button-secondary" disabled={!writable || !canMoveBack} onClick={() => moveTo(-1)}>回看上一题</button>
             <button className="button-primary" disabled={!writable} onClick={() => mutate(startFavoritePractice)}>
               再刷一轮 <Icon name="restart" size={17} />
             </button>
           </section> : page !== 'favorites' ? <section className="empty-card" role="status">
             <div className="empty-icon"><Icon name="check" size={27} /></div>
             <h2>{page === 'compact' ? '精选题已全部刷完' : '全量题库已全部刷完'}</h2>
-            <p>已刷完 {statRefs.length} 道题，答题记录已保留。可以到我的收藏回看错题。</p>
+            <p>已刷完 {statRefs.length} 道题，答题记录已保留。</p>
+            <button className="button-secondary" disabled={!writable || !canMoveBack} onClick={() => moveTo(-1)}>回看上一题</button>
             <button className="button-primary" disabled={!writable}
               onClick={() => switchPage(page === 'compact' ? 'full' : 'favorites')}>
               {page === 'compact' ? '继续刷全题库' : '回看我的收藏'} <Icon name="arrowRight" size={17} />

@@ -116,13 +116,14 @@ test('switching banks skips shared answers, including wrong answers, without los
   assert.equal(findUnansweredIndex([1, 2, 3], { 2: 'A', 3: 'B' }, 2), 0)
 })
 
-test('navigation skips answered runs in both directions and wraps forward to missed questions', () => {
+test('navigation reviews answered questions and wraps forward to missed questions', () => {
   const state = initialState(questions, selected)
   state.full = { order: [1, 2, 3, 4, 5], index: 0 }
   state.answers = { 2: 'A', 3: 'B', 5: 'A' }
   const next = movePractice(state, 1)
   assert.equal(next.full.order[next.full.index], 4)
-  assert.equal(movePractice(next, -1).full.index, 0)
+  assert.equal(movePractice(next, -1).full.index, 2)
+  assert.equal(movePractice(next, -1, 0).full.index, 0)
   const answered = recordAnswer(next, 4, 'A', 'A')
   assert.equal(movePractice(answered, 1).full.index, 0)
   assert.equal(movePractice(state, -1), state)
@@ -196,7 +197,8 @@ test('favorite retry resumes unanswered questions across banks and wraps over sk
   round.favoritePractice = { order: [1, 2, 3, 4], index: 0, answers: { 2: 'A' } }
   const next = movePractice(round, 1)
   assert.equal(next.favoritePractice.index, 2)
-  assert.equal(movePractice(next, -1).favoritePractice.index, 0)
+  assert.equal(movePractice(next, -1).favoritePractice.index, 1)
+  assert.equal(movePractice(next, -1, 0).favoritePractice.index, 0)
   assert.equal(movePractice(round, -1), round)
   const wrong = recordAnswer(next, 3, 'B', 'A')
   const full = resumePractice(wrong, 'full')

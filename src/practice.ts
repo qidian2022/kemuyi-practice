@@ -278,20 +278,24 @@ export function resumePractice(previous: PracticeData, page: Page = previous.pag
     : { ...previous, page, [page]: { ...bank, index } }
 }
 
-export function movePractice(previous: PracticeData, direction: 1 | -1): PracticeData {
+export function movePractice(previous: PracticeData, direction: 1 | -1, lastVisited?: number): PracticeData {
+  function destination(bank: { index: number; order: number[] }, answers: PracticeData['answers']) {
+    if (direction === 1) return findUnansweredIndex(bank.order, answers, bank.index + 1)
+    return lastVisited ?? Math.max(0, bank.index - 1)
+  }
   if (previous.page === 'favorites') {
     const retry = previous.favoritePractice
     if (retry) {
-      const index = findUnansweredIndex(retry.order, retry.answers, retry.index + direction, direction, direction === 1)
-      if (index === retry.index || (direction === -1 && index === retry.order.length)) return previous
+      const index = destination(retry, retry.answers)
+      if (index === retry.index) return previous
       return { ...previous, favoritePractice: { ...retry, index } }
     }
     const index = safeIndex(previous.favoriteIndex + direction, previous.favorites.length)
     return index === previous.favoriteIndex ? previous : { ...previous, favoriteIndex: index }
   }
   const bank = previous[previous.page]
-  const index = findUnansweredIndex(bank.order, previous.answers, bank.index + direction, direction, direction === 1)
-  if (index === bank.index || (direction === -1 && index === bank.order.length)) return previous
+  const index = destination(bank, previous.answers)
+  if (index === bank.index) return previous
   return { ...previous, [previous.page]: { ...bank, index } }
 }
 
